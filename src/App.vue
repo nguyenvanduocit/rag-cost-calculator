@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
 import { create, all } from 'mathjs'
+import { generateConversation } from './lib/conversation'
 
 const math = create(all)
 
@@ -21,23 +22,18 @@ const generateRandomText = (wordCount: number): string => {
 
 // Example content computed property
 const exampleContent = computed(() => {
-  const conversation = []
-  for (let i = 0; i < messagesPerConversation.value; i++) {
-    conversation.push({
-      userQuery: generateRandomText(userQueryWords.value),
-      chunks: Array.from({ length: chunksPerQuery.value }, () => generateRandomText(wordsPerChunk.value)),
-      response: generateRandomText(responseWords.value)
-    })
-  }
-  return {
-    conversation
-  }
+  return generateConversation(
+    messagesPerConversation.value,
+    userQueryWords.value,
+    chunksPerQuery.value,
+    wordsPerChunk.value,
+    responseWords.value
+  )
 })
 
 // Add randomization functions
 const randomizeSettings = () => {
-  // Randomize within reasonable bounds
-  dailyUsers.value = Math.floor(Math.random() * 900) + 100 // 100-1000
+  // Randomize within reasonable bounds, but keep dailyUsers unchanged
   conversationsPerUser.value = Math.floor(Math.random() * 5) + 1 // 1-5
   messagesPerConversation.value = Math.floor(Math.random() * 7) + 3 // 3-10
   wordsPerChunk.value = Math.floor(Math.random() * 300) + 100 // 100-400
@@ -99,10 +95,24 @@ const calculations = computed(() => {
     const queryTokens = wordsToTokens(userQueryWords.value)
     const outputTokens = wordsToTokens(responseWords.value)
     
-    // Calculate total input tokens per message
+    // Calculate conversation history tokens for each message
+    // For message N, we include N-1 previous exchanges (query + response)
+    const getHistoryTokensForMessage = (messageIndex: number) => {
+      if (messageIndex === 0) return 0
+      return (messageIndex) * (queryTokens + outputTokens)
+    }
+    
+    // Calculate average history tokens across all messages
+    const totalHistoryTokens = Array.from({ length: messagesPerConversation.value })
+      .map((_, index) => getHistoryTokensForMessage(index))
+      .reduce((sum, tokens) => sum + tokens, 0)
+    const averageHistoryTokens = totalHistoryTokens / messagesPerConversation.value
+    
+    // Calculate total input tokens per message (including history)
     const totalInputTokens = math.chain(chunksPerQuery.value)
       .multiply(chunkTokens)
       .add(queryTokens)
+      .add(averageHistoryTokens)
       .done()
     
     const tokensPerMessage = totalInputTokens + outputTokens
@@ -137,7 +147,8 @@ const calculations = computed(() => {
       totalDailyMessages,
       dailyCost,
       monthlyCost,
-      annualCost
+      annualCost,
+      averageHistoryTokens: Math.round(averageHistoryTokens)
     }
   } catch (error) {
     console.error('Calculation error:', error)
@@ -147,7 +158,8 @@ const calculations = computed(() => {
       totalDailyMessages: 0,
       dailyCost: 0,
       monthlyCost: 0,
-      annualCost: 0
+      annualCost: 0,
+      averageHistoryTokens: 0
     }
   }
 })
@@ -287,6 +299,10 @@ const calculations = computed(() => {
                 <p class="text-2xl font-semibold">{{ Math.round(calculations.tokensPerMessage) }} <span class="text-sm text-gray-600">tokens</span></p>
               </div>
               <div class="bg-white p-4 rounded-lg shadow-sm">
+                <p class="text-sm font-medium text-green-800 mb-1">Average History Tokens</p>
+                <p class="text-2xl font-semibold">{{ calculations.averageHistoryTokens }} <span class="text-sm text-gray-600">tokens</span></p>
+              </div>
+              <div class="bg-white p-4 rounded-lg shadow-sm">
                 <p class="text-sm font-medium text-green-800 mb-1">Total Daily Messages</p>
                 <p class="text-2xl font-semibold">{{ calculations.totalDailyMessages }}</p>
               </div>
@@ -298,7 +314,7 @@ const calculations = computed(() => {
                 <p class="text-sm font-medium text-green-800 mb-1">Monthly Cost (30 days)</p>
                 <p class="text-2xl font-semibold">${{ calculations.monthlyCost.toFixed(2) }}</p>
               </div>
-              <div class="col-span-2 bg-white p-4 rounded-lg shadow-sm">
+              <div class="bg-white p-4 rounded-lg shadow-sm">
                 <p class="text-sm font-medium text-green-800 mb-1">Projected Annual Cost</p>
                 <p class="text-2xl font-semibold">${{ calculations.annualCost.toFixed(2) }}</p>
               </div>
@@ -320,11 +336,11 @@ const calculations = computed(() => {
             </li>
             <li class="flex items-start">
               <span class="text-gray-400 mr-2">•</span>
-              Input tokens per message = (Chunks × Words per Chunk × 1.33) + (Query Words × 1.33)
+              Input tokens per message = (Chunks × Words per Chunk × 1.33) + (Query Words × 1.33) + History Tokens
             </li>
             <li class="flex items-start">
               <span class="text-gray-400 mr-2">•</span>
-              Output tokens per message = Response Words × 1.33
+              History tokens include all previous messages in the conversation (both user queries and AI responses)
             </li>
             <li class="flex items-start">
               <span class="text-gray-400 mr-2">•</span>
@@ -335,7 +351,18 @@ const calculations = computed(() => {
 
         <!-- Example Content -->
         <div class="mt-8 bg-purple-50 p-6 rounded-xl border border-purple-100">
-          <h3 class="text-xl font-bold text-purple-900 mb-4">Example Conversation Flow</h3>
+          <div class="flex justify-between items-center mb-4">
+            <h3 class="text-xl font-bold text-purple-900">Example Conversation Flow</h3>
+            <button 
+              @click="randomizeSettings"
+              class="bg-purple-600 hover:bg-purple-700 text-white px-4 py-2 rounded-lg shadow-sm transition-colors duration-200 flex items-center space-x-2"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                <path fill-rule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clip-rule="evenodd" />
+              </svg>
+              <span>Randomize Example</span>
+            </button>
+          </div>
           
           <div class="space-y-6">
             <div v-for="(exchange, index) in exampleContent.conversation" :key="index" class="space-y-6">

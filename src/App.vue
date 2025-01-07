@@ -21,17 +21,30 @@ const generateRandomText = (wordCount: number): string => {
 
 // Example content computed property
 const exampleContent = computed(() => {
-  const chunks = []
-  for (let i = 0; i < chunksPerQuery.value; i++) {
-    chunks.push(generateRandomText(wordsPerChunk.value))
+  const conversation = []
+  for (let i = 0; i < messagesPerConversation.value; i++) {
+    conversation.push({
+      userQuery: generateRandomText(userQueryWords.value),
+      chunks: Array.from({ length: chunksPerQuery.value }, () => generateRandomText(wordsPerChunk.value)),
+      response: generateRandomText(responseWords.value)
+    })
   }
-  
   return {
-    userQuery: generateRandomText(userQueryWords.value),
-    chunks: chunks,
-    response: generateRandomText(responseWords.value)
+    conversation
   }
 })
+
+// Add randomization functions
+const randomizeSettings = () => {
+  // Randomize within reasonable bounds
+  dailyUsers.value = Math.floor(Math.random() * 900) + 100 // 100-1000
+  conversationsPerUser.value = Math.floor(Math.random() * 5) + 1 // 1-5
+  messagesPerConversation.value = Math.floor(Math.random() * 7) + 3 // 3-10
+  wordsPerChunk.value = Math.floor(Math.random() * 300) + 100 // 100-400
+  userQueryWords.value = Math.floor(Math.random() * 32) + 8 // 8-40
+  responseWords.value = Math.floor(Math.random() * 90) + 30 // 30-120
+  chunksPerQuery.value = Math.floor(Math.random() * 3) + 1 // 1-3
+}
 
 // Word to token conversion ratio
 const WORDS_TO_TOKENS_RATIO = 1.33 // 1 word ≈ 1.33 tokens
@@ -55,22 +68,10 @@ type OpenAIModels = {
 
 const OPENAI_MODELS: OpenAIModels = {
   'gpt-4o': {
-    name: 'GPT-4O',
+    name: 'GPT-40',
     description: 'Latest model with vision capabilities, 128K context (Oct 2023)',
     inputPrice: 0.0025,      // $0.0025/1K tokens
     outputPrice: 0.01        // $0.01/1K tokens
-  },
-  'gpt-4o-2024-11-20': {
-    name: 'GPT-4O (Nov 2023)', 
-    description: 'November 2023 snapshot',
-    inputPrice: 0.0025,
-    outputPrice: 0.01
-  },
-  'gpt-4o-2024-08-06': {
-    name: 'GPT-4O (Aug 2023)',
-    description: 'August 2023 snapshot', 
-    inputPrice: 0.0025,
-    outputPrice: 0.01
   }
 }
 
@@ -79,13 +80,14 @@ const selectedModel = ref<string>('gpt-4o')
 
 // Basic settings
 const dailyUsers = ref<number>(100)
-const messagesPerUser = ref<number>(10)
+const conversationsPerUser = ref<number>(3)
+const messagesPerConversation = ref<number>(5)
 
 // Word settings
-const wordsPerChunk = ref<number>(375) // ~500 tokens
-const userQueryWords = ref<number>(30) // ~40 tokens
-const responseWords = ref<number>(75) // ~100 tokens
-const chunksPerQuery = ref<number>(3)
+const wordsPerChunk = ref<number>(200) // ~500 tokens
+const userQueryWords = ref<number>(18) // ~40 tokens
+const responseWords = ref<number>(60) // ~100 tokens
+const chunksPerQuery = ref<number>(2)
 
 // Computed values
 const calculations = computed(() => {
@@ -97,26 +99,30 @@ const calculations = computed(() => {
     const queryTokens = wordsToTokens(userQueryWords.value)
     const outputTokens = wordsToTokens(responseWords.value)
     
-    // Calculate total input tokens
+    // Calculate total input tokens per message
     const totalInputTokens = math.chain(chunksPerQuery.value)
       .multiply(chunkTokens)
       .add(queryTokens)
       .done()
     
-    const tokensPerQuery = totalInputTokens + outputTokens
-    const wordsPerQuery = tokensToWords(totalInputTokens + outputTokens)
+    const tokensPerMessage = totalInputTokens + outputTokens
+    const wordsPerMessage = tokensToWords(totalInputTokens + outputTokens)
+
+    // Calculate total messages per day
+    const totalDailyMessages = math.chain(dailyUsers.value)
+      .multiply(conversationsPerUser.value)
+      .multiply(messagesPerConversation.value)
+      .done()
 
     // Calculate daily cost
     const dailyInputCost = math.chain(totalInputTokens)
-      .multiply(messagesPerUser.value)
-      .multiply(dailyUsers.value)
+      .multiply(totalDailyMessages)
       .divide(1000)
       .multiply(model.inputPrice)
       .done()
       
     const dailyOutputCost = math.chain(outputTokens)
-      .multiply(messagesPerUser.value)
-      .multiply(dailyUsers.value)
+      .multiply(totalDailyMessages)
       .divide(1000)
       .multiply(model.outputPrice)
       .done()
@@ -126,8 +132,9 @@ const calculations = computed(() => {
     const annualCost = math.multiply(dailyCost, 365)
 
     return {
-      tokensPerQuery,
-      wordsPerQuery,
+      tokensPerMessage,
+      wordsPerMessage,
+      totalDailyMessages,
       dailyCost,
       monthlyCost,
       annualCost
@@ -135,8 +142,9 @@ const calculations = computed(() => {
   } catch (error) {
     console.error('Calculation error:', error)
     return {
-      tokensPerQuery: 0,
-      wordsPerQuery: 0,
+      tokensPerMessage: 0,
+      wordsPerMessage: 0,
+      totalDailyMessages: 0,
       dailyCost: 0,
       monthlyCost: 0,
       annualCost: 0
@@ -179,10 +187,20 @@ const calculations = computed(() => {
             </div>
             
             <div>
-              <label class="block text-gray-700 font-semibold mb-2">Messages per User per Day</label>
+              <label class="block text-gray-700 font-semibold mb-2">Conversations per User per Day</label>
               <input
                 type="number"
-                v-model.number="messagesPerUser"
+                v-model.number="conversationsPerUser"
+                min="1"
+                class="w-full border border-gray-300 rounded-lg p-3 bg-white shadow-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              >
+            </div>
+
+            <div>
+              <label class="block text-gray-700 font-semibold mb-2">Messages per Conversation</label>
+              <input
+                type="number"
+                v-model.number="messagesPerConversation"
                 min="1"
                 class="w-full border border-gray-300 rounded-lg p-3 bg-white shadow-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
               >
@@ -261,12 +279,16 @@ const calculations = computed(() => {
             <h3 class="text-xl font-bold text-green-900 mb-4">Usage & Cost Breakdown</h3>
             <div class="grid grid-cols-2 gap-6">
               <div class="bg-white p-4 rounded-lg shadow-sm">
-                <p class="text-sm font-medium text-green-800 mb-1">Words per Query</p>
-                <p class="text-2xl font-semibold">{{ Math.round(calculations.wordsPerQuery) }} <span class="text-sm text-gray-600">words</span></p>
+                <p class="text-sm font-medium text-green-800 mb-1">Words per Message</p>
+                <p class="text-2xl font-semibold">{{ Math.round(calculations.wordsPerMessage) }} <span class="text-sm text-gray-600">words</span></p>
               </div>
               <div class="bg-white p-4 rounded-lg shadow-sm">
-                <p class="text-sm font-medium text-green-800 mb-1">Tokens per Query</p>
-                <p class="text-2xl font-semibold">{{ Math.round(calculations.tokensPerQuery) }} <span class="text-sm text-gray-600">tokens</span></p>
+                <p class="text-sm font-medium text-green-800 mb-1">Tokens per Message</p>
+                <p class="text-2xl font-semibold">{{ Math.round(calculations.tokensPerMessage) }} <span class="text-sm text-gray-600">tokens</span></p>
+              </div>
+              <div class="bg-white p-4 rounded-lg shadow-sm">
+                <p class="text-sm font-medium text-green-800 mb-1">Total Daily Messages</p>
+                <p class="text-2xl font-semibold">{{ calculations.totalDailyMessages }}</p>
               </div>
               <div class="bg-white p-4 rounded-lg shadow-sm">
                 <p class="text-sm font-medium text-green-800 mb-1">Daily Cost</p>
@@ -294,11 +316,15 @@ const calculations = computed(() => {
             </li>
             <li class="flex items-start">
               <span class="text-gray-400 mr-2">•</span>
-              Input tokens = (Chunks × Words per Chunk × 1.33) + (Query Words × 1.33)
+              Total daily messages = Users × Conversations per user × Messages per conversation
             </li>
             <li class="flex items-start">
               <span class="text-gray-400 mr-2">•</span>
-              Output tokens = Response Words × 1.33
+              Input tokens per message = (Chunks × Words per Chunk × 1.33) + (Query Words × 1.33)
+            </li>
+            <li class="flex items-start">
+              <span class="text-gray-400 mr-2">•</span>
+              Output tokens per message = Response Words × 1.33
             </li>
             <li class="flex items-start">
               <span class="text-gray-400 mr-2">•</span>
@@ -309,26 +335,34 @@ const calculations = computed(() => {
 
         <!-- Example Content -->
         <div class="mt-8 bg-purple-50 p-6 rounded-xl border border-purple-100">
-          <h3 class="text-xl font-bold text-purple-900 mb-4">Example Message Flow</h3>
+          <h3 class="text-xl font-bold text-purple-900 mb-4">Example Conversation Flow</h3>
           
           <div class="space-y-6">
-            <div class="bg-white p-4 rounded-lg shadow-sm">
-              <p class="text-sm font-medium text-purple-800 mb-2">User Query ({{ userQueryWords }} words)</p>
-              <p class="text-gray-700">{{ exampleContent.userQuery }}</p>
-            </div>
+            <div v-for="(exchange, index) in exampleContent.conversation" :key="index" class="space-y-6">
+              <!-- User Query -->
+              <div class="flex justify-end">
+                <div class="bg-blue-500 text-white p-4 rounded-2xl rounded-tr-none max-w-[80%] shadow-sm">
+                  <p class="text-sm font-medium text-blue-100 mb-1">Message {{ index + 1 }} - User Query ({{ userQueryWords }} words)</p>
+                  <p>{{ exchange.userQuery }}</p>
+                </div>
+              </div>
 
-            <div class="bg-white p-4 rounded-lg shadow-sm">
-              <p class="text-sm font-medium text-purple-800 mb-2">Retrieved Chunks ({{ chunksPerQuery }} × {{ wordsPerChunk }} words)</p>
-              <div class="space-y-3">
-                <div v-for="(chunk, index) in exampleContent.chunks" :key="index" class="p-3 bg-purple-50 rounded">
+              <!-- Retrieved Chunks -->
+              <div class="flex flex-col space-y-2">
+                <p class="text-sm font-medium text-purple-800 px-4">Retrieved Context ({{ chunksPerQuery }} × {{ wordsPerChunk }} words)</p>
+                <div v-for="(chunk, chunkIndex) in exchange.chunks" :key="chunkIndex" 
+                     class="bg-gray-100 p-4 rounded-2xl max-w-[80%] shadow-sm">
                   <p class="text-gray-700">{{ chunk }}</p>
                 </div>
               </div>
-            </div>
 
-            <div class="bg-white p-4 rounded-lg shadow-sm">
-              <p class="text-sm font-medium text-purple-800 mb-2">AI Response ({{ responseWords }} words)</p>
-              <p class="text-gray-700">{{ exampleContent.response }}</p>
+              <!-- AI Response -->
+              <div class="flex justify-start">
+                <div class="bg-white p-4 rounded-2xl rounded-tl-none max-w-[80%] shadow-sm border border-gray-200">
+                  <p class="text-sm font-medium text-purple-800 mb-1">Message {{ index + 1 }} - AI Response ({{ responseWords }} words)</p>
+                  <p class="text-gray-700">{{ exchange.response }}</p>
+                </div>
+              </div>
             </div>
           </div>
         </div>

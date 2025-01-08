@@ -1,9 +1,11 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { create, all } from 'mathjs'
 import { generateConversation } from './lib/conversation'
+import { createUrlStateManager } from './lib/urlState'
 
 const math = create(all)
+const urlStateManager = createUrlStateManager()
 
 // Helper functions for generating example content
 const generateRandomText = (wordCount: number): string => {
@@ -161,6 +163,48 @@ const calculations = computed(() => {
       annualCost: 0,
       averageHistoryTokens: 0
     }
+  }
+})
+
+// Add watch for state changes
+watch(
+  [
+    dailyUsers,
+    conversationsPerUser,
+    messagesPerConversation,
+    wordsPerChunk,
+    userQueryWords,
+    responseWords,
+    chunksPerQuery,
+    selectedModel
+  ],
+  () => {
+    urlStateManager.saveState({
+      dailyUsers: dailyUsers.value,
+      conversationsPerUser: conversationsPerUser.value,
+      messagesPerConversation: messagesPerConversation.value,
+      wordsPerChunk: wordsPerChunk.value,
+      userQueryWords: userQueryWords.value,
+      responseWords: responseWords.value,
+      chunksPerQuery: chunksPerQuery.value,
+      selectedModel: selectedModel.value
+    })
+  },
+  { deep: true }
+)
+
+// Load state on mount
+onMounted(() => {
+  const savedState = urlStateManager.loadState()
+  if (savedState) {
+    dailyUsers.value = savedState.dailyUsers ?? dailyUsers.value
+    conversationsPerUser.value = savedState.conversationsPerUser ?? conversationsPerUser.value
+    messagesPerConversation.value = savedState.messagesPerConversation ?? messagesPerConversation.value
+    wordsPerChunk.value = savedState.wordsPerChunk ?? wordsPerChunk.value
+    userQueryWords.value = savedState.userQueryWords ?? userQueryWords.value
+    responseWords.value = savedState.responseWords ?? responseWords.value
+    chunksPerQuery.value = savedState.chunksPerQuery ?? chunksPerQuery.value
+    selectedModel.value = savedState.selectedModel ?? selectedModel.value
   }
 })
 </script>

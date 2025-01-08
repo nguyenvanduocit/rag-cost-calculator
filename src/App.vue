@@ -7,21 +7,6 @@ import { createUrlStateManager } from './lib/urlState'
 const math = create(all)
 const urlStateManager = createUrlStateManager()
 
-// Helper functions for generating example content
-const generateRandomText = (wordCount: number): string => {
-  const loremWords = [
-    'lorem', 'ipsum', 'dolor', 'sit', 'amet', 'consectetur', 'adipiscing', 'elit',
-    'sed', 'do', 'eiusmod', 'tempor', 'incididunt', 'ut', 'labore', 'et', 'dolore',
-    'magna', 'aliqua', 'enim', 'ad', 'minim', 'veniam', 'quis', 'nostrud', 'exercitation'
-  ]
-  
-  const result = []
-  for (let i = 0; i < wordCount; i++) {
-    result.push(loremWords[Math.floor(Math.random() * loremWords.length)])
-  }
-  return result.join(' ')
-}
-
 // Example content computed property
 const exampleContent = computed(() => {
   return generateConversation(

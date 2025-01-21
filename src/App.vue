@@ -1,10 +1,16 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue'
-import { create, all } from 'mathjs'
 import { generateConversation } from './lib/conversation'
 import { createUrlStateManager } from './lib/urlState'
+import { 
+  calculateCosts, 
+  wordsToTokens, 
+  tokensToWords,
+  OPENAI_MODELS,
+  type OpenAIModel,
+  type OpenAIModels
+} from './lib/calculations'
 
-const math = create(all)
 const urlStateManager = createUrlStateManager()
 
 // Example content computed property
@@ -29,35 +35,6 @@ const randomizeSettings = () => {
   chunksPerQuery.value = Math.floor(Math.random() * 3) + 1 // 1-3
 }
 
-// Word to token conversion ratio
-const WORDS_TO_TOKENS_RATIO = 1.33 // 1 word ≈ 1.33 tokens
-
-// Convert words to tokens
-const wordsToTokens = (words: number) => Math.ceil(words * WORDS_TO_TOKENS_RATIO)
-
-// Convert tokens to words
-const tokensToWords = (tokens: number) => Math.ceil(tokens / WORDS_TO_TOKENS_RATIO)
-
-interface OpenAIModel {
-  name: string
-  description: string
-  inputPrice: number
-  outputPrice: number
-}
-
-type OpenAIModels = {
-  [key: string]: OpenAIModel
-}
-
-const OPENAI_MODELS: OpenAIModels = {
-  'gpt-4o': {
-    name: 'GPT-40',
-    description: 'Latest model with vision capabilities, 128K context (Oct 2023)',
-    inputPrice: 0.0025,      // $0.0025/1K tokens
-    outputPrice: 0.01        // $0.01/1K tokens
-  }
-}
-
 // Model selection
 const selectedModel = ref<string>('gpt-4o')
 
@@ -74,81 +51,16 @@ const chunksPerQuery = ref<number>(2)
 
 // Computed values
 const calculations = computed(() => {
-  try {
-    const model = OPENAI_MODELS[selectedModel.value]
-    
-    // Convert words to tokens for calculations
-    const chunkTokens = wordsToTokens(wordsPerChunk.value)
-    const queryTokens = wordsToTokens(userQueryWords.value)
-    const outputTokens = wordsToTokens(responseWords.value)
-    
-    // Calculate conversation history tokens for each message
-    // For message N, we include N-1 previous exchanges (query + response)
-    const getHistoryTokensForMessage = (messageIndex: number) => {
-      if (messageIndex === 0) return 0
-      return (messageIndex) * (queryTokens + outputTokens)
-    }
-    
-    // Calculate average history tokens across all messages
-    const totalHistoryTokens = Array.from({ length: messagesPerConversation.value })
-      .map((_, index) => getHistoryTokensForMessage(index))
-      .reduce((sum, tokens) => sum + tokens, 0)
-    const averageHistoryTokens = totalHistoryTokens / messagesPerConversation.value
-    
-    // Calculate total input tokens per message (including history)
-    const totalInputTokens = math.chain(chunksPerQuery.value)
-      .multiply(chunkTokens)
-      .add(queryTokens)
-      .add(averageHistoryTokens)
-      .done()
-    
-    const tokensPerMessage = totalInputTokens + outputTokens
-    const wordsPerMessage = tokensToWords(totalInputTokens + outputTokens)
-
-    // Calculate total messages per day
-    const totalDailyMessages = math.chain(dailyUsers.value)
-      .multiply(conversationsPerUser.value)
-      .multiply(messagesPerConversation.value)
-      .done()
-
-    // Calculate daily cost
-    const dailyInputCost = math.chain(totalInputTokens)
-      .multiply(totalDailyMessages)
-      .divide(1000)
-      .multiply(model.inputPrice)
-      .done()
-      
-    const dailyOutputCost = math.chain(outputTokens)
-      .multiply(totalDailyMessages)
-      .divide(1000)
-      .multiply(model.outputPrice)
-      .done()
-      
-    const dailyCost = math.add(dailyInputCost, dailyOutputCost)
-    const monthlyCost = math.multiply(dailyCost, 30)
-    const annualCost = math.multiply(dailyCost, 365)
-
-    return {
-      tokensPerMessage,
-      wordsPerMessage,
-      totalDailyMessages,
-      dailyCost,
-      monthlyCost,
-      annualCost,
-      averageHistoryTokens: Math.round(averageHistoryTokens)
-    }
-  } catch (error) {
-    console.error('Calculation error:', error)
-    return {
-      tokensPerMessage: 0,
-      wordsPerMessage: 0,
-      totalDailyMessages: 0,
-      dailyCost: 0,
-      monthlyCost: 0,
-      annualCost: 0,
-      averageHistoryTokens: 0
-    }
-  }
+  return calculateCosts({
+    selectedModel: selectedModel.value,
+    dailyUsers: dailyUsers.value,
+    conversationsPerUser: conversationsPerUser.value,
+    messagesPerConversation: messagesPerConversation.value,
+    wordsPerChunk: wordsPerChunk.value,
+    userQueryWords: userQueryWords.value,
+    responseWords: responseWords.value,
+    chunksPerQuery: chunksPerQuery.value
+  })
 })
 
 // Add watch for state changes
@@ -344,8 +256,122 @@ onMounted(() => {
                 <p class="text-2xl font-semibold">${{ calculations.monthlyCost.toFixed(2) }}</p>
               </div>
               <div class="bg-white p-4 rounded-lg shadow-sm">
+                <p class="text-sm font-medium text-green-800 mb-1">Cost per Message (30 days)</p>
+                <p class="text-2xl font-semibold">${{ calculations.costPerMessage.toFixed(4) }}</p>
+              </div>
+              <div class="bg-white p-4 rounded-lg shadow-sm">
+                <p class="text-sm font-medium text-green-800 mb-1">Cost per User (30 days)</p>
+                <p class="text-2xl font-semibold">${{ calculations.costPerUser.toFixed(2) }}</p>
+              </div>
+              <div class="bg-white p-4 rounded-lg shadow-sm">
                 <p class="text-sm font-medium text-green-800 mb-1">Projected Annual Cost</p>
                 <p class="text-2xl font-semibold">${{ calculations.annualCost.toFixed(2) }}</p>
+              </div>
+            </div>
+          </div>
+
+          <!-- Backcheck Results -->
+          <div class="bg-yellow-50 p-6 rounded-xl border border-yellow-100">
+            <h3 class="text-xl font-bold text-yellow-900 mb-4">Calculation Validation</h3>
+            <div v-if="calculations.backcheck" class="space-y-4">
+              <div class="flex items-center space-x-2">
+                <span class="font-medium text-yellow-800">Validation Status:</span>
+                <span 
+                  :class="calculations.backcheck.isValid ? 'text-green-600' : 'text-red-600'"
+                  class="font-semibold"
+                >
+                  {{ calculations.backcheck.isValid ? 'Valid' : 'Invalid' }}
+                </span>
+              </div>
+
+              <div class="grid grid-cols-2 gap-6">
+                <!-- Total Messages -->
+                <div class="bg-white p-4 rounded-lg shadow-sm">
+                  <p class="text-sm font-medium text-yellow-800 mb-2">Total Messages Validation</p>
+                  <div class="flex justify-between items-center">
+                    <span class="text-gray-600">Expected:</span>
+                    <span class="font-semibold">{{ calculations.backcheck.details.expectedValues.totalMessages }}</span>
+                  </div>
+                  <div class="flex justify-between items-center">
+                    <span class="text-gray-600">Actual:</span>
+                    <span class="font-semibold">{{ calculations.backcheck.details.actualValues.totalMessages }}</span>
+                  </div>
+                  <div class="mt-2 flex items-center space-x-2">
+                    <span class="text-sm">Status:</span>
+                    <span 
+                      :class="calculations.backcheck.details.totalMessagesMatch ? 'text-green-600' : 'text-red-600'"
+                      class="text-sm font-semibold"
+                    >
+                      {{ calculations.backcheck.details.totalMessagesMatch ? 'Match' : 'Mismatch' }}
+                    </span>
+                  </div>
+                </div>
+
+                <!-- Daily Cost -->
+                <div class="bg-white p-4 rounded-lg shadow-sm">
+                  <p class="text-sm font-medium text-yellow-800 mb-2">Daily Cost Validation</p>
+                  <div class="flex justify-between items-center">
+                    <span class="text-gray-600">Expected:</span>
+                    <span class="font-semibold">${{ calculations.backcheck.details.expectedValues.dailyCost.toFixed(4) }}</span>
+                  </div>
+                  <div class="flex justify-between items-center">
+                    <span class="text-gray-600">Actual:</span>
+                    <span class="font-semibold">${{ calculations.backcheck.details.actualValues.dailyCost.toFixed(4) }}</span>
+                  </div>
+                  <div class="mt-2 flex items-center space-x-2">
+                    <span class="text-sm">Status:</span>
+                    <span 
+                      :class="calculations.backcheck.details.dailyCostMatch ? 'text-green-600' : 'text-red-600'"
+                      class="text-sm font-semibold"
+                    >
+                      {{ calculations.backcheck.details.dailyCostMatch ? 'Match' : 'Mismatch' }}
+                    </span>
+                  </div>
+                </div>
+
+                <!-- Input Tokens -->
+                <div class="bg-white p-4 rounded-lg shadow-sm">
+                  <p class="text-sm font-medium text-yellow-800 mb-2">Input Tokens Validation</p>
+                  <div class="flex justify-between items-center">
+                    <span class="text-gray-600">Expected:</span>
+                    <span class="font-semibold">{{ calculations.backcheck.details.expectedValues.inputTokens }}</span>
+                  </div>
+                  <div class="flex justify-between items-center">
+                    <span class="text-gray-600">Actual:</span>
+                    <span class="font-semibold">{{ calculations.backcheck.details.actualValues.inputTokens }}</span>
+                  </div>
+                  <div class="mt-2 flex items-center space-x-2">
+                    <span class="text-sm">Status:</span>
+                    <span 
+                      :class="calculations.backcheck.details.inputTokensMatch ? 'text-green-600' : 'text-red-600'"
+                      class="text-sm font-semibold"
+                    >
+                      {{ calculations.backcheck.details.inputTokensMatch ? 'Match' : 'Mismatch' }}
+                    </span>
+                  </div>
+                </div>
+
+                <!-- Output Tokens -->
+                <div class="bg-white p-4 rounded-lg shadow-sm">
+                  <p class="text-sm font-medium text-yellow-800 mb-2">Output Tokens Validation</p>
+                  <div class="flex justify-between items-center">
+                    <span class="text-gray-600">Expected:</span>
+                    <span class="font-semibold">{{ calculations.backcheck.details.expectedValues.outputTokens }}</span>
+                  </div>
+                  <div class="flex justify-between items-center">
+                    <span class="text-gray-600">Actual:</span>
+                    <span class="font-semibold">{{ calculations.backcheck.details.actualValues.outputTokens }}</span>
+                  </div>
+                  <div class="mt-2 flex items-center space-x-2">
+                    <span class="text-sm">Status:</span>
+                    <span 
+                      :class="calculations.backcheck.details.outputTokensMatch ? 'text-green-600' : 'text-red-600'"
+                      class="text-sm font-semibold"
+                    >
+                      {{ calculations.backcheck.details.outputTokensMatch ? 'Match' : 'Mismatch' }}
+                    </span>
+                  </div>
+                </div>
               </div>
             </div>
           </div>

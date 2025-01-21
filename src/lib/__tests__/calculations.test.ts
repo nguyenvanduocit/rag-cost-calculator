@@ -1,147 +1,182 @@
 import { describe, it, expect } from 'vitest'
-import { create, all } from 'mathjs'
+import {
+  wordsToTokens,
+  tokensToWords,
+  WORDS_TO_TOKENS_RATIO,
+  calculateCosts,
+  OPENAI_MODELS,
+  type CalculationInput,
+} from "../calculations";
 
-const math = create(all)
+describe("Word-Token Conversion", () => {
+  it("should correctly convert words to tokens", () => {
+    expect(wordsToTokens(10)).toBe(14); // 10 * 1.33 = 13.3, ceil to 14
+    expect(wordsToTokens(100)).toBe(133);
+    expect(wordsToTokens(0)).toBe(0);
+    expect(wordsToTokens(-1)).toBe(0); // Negative input should return 0
+    expect(wordsToTokens(0.5)).toBe(1); // Decimal input should be rounded up
+    expect(wordsToTokens(1000000)).toBe(1330000); // Large number test
+  });
 
-// Word to token conversion ratio
-const WORDS_TO_TOKENS_RATIO = 1.33
+  it("should correctly convert tokens to words", () => {
+    expect(tokensToWords(14)).toBe(11); // 14 / 1.33 = 10.52, ceil to 11
+    expect(tokensToWords(133)).toBe(100);
+    expect(tokensToWords(0)).toBe(0);
+    expect(tokensToWords(-1)).toBe(0); // Negative input should return 0
+    expect(tokensToWords(0.5)).toBe(1); // Decimal input should be rounded up
+    expect(tokensToWords(1000000)).toBe(751880); // Large number test
+  });
+});
 
-// Convert words to tokens
-const wordsToTokens = (words: number) => Math.ceil(words * WORDS_TO_TOKENS_RATIO)
+describe("Cost Calculations", () => {
+  const defaultInput: CalculationInput = {
+    selectedModel: "gpt-4o",
+    dailyUsers: 100,
+    conversationsPerUser: 3,
+    messagesPerConversation: 5,
+    wordsPerChunk: 200,
+    userQueryWords: 18,
+    responseWords: 60,
+    chunksPerQuery: 2,
+  };
 
-// Convert tokens to words
-const tokensToWords = (tokens: number) => Math.ceil(tokens / WORDS_TO_TOKENS_RATIO)
+  it("should calculate basic costs correctly", () => {
+    const result = calculateCosts(defaultInput);
 
-describe('Word-Token Conversion', () => {
-  it('should correctly convert words to tokens', () => {
-    expect(wordsToTokens(10)).toBe(14) // 10 * 1.33 = 13.3, ceil to 14
-    expect(wordsToTokens(100)).toBe(133)
-    expect(wordsToTokens(0)).toBe(0)
-    expect(wordsToTokens(-1)).toBe(0) // Negative input should return 0
-    expect(wordsToTokens(0.5)).toBe(1) // Decimal input should be rounded up
-    expect(wordsToTokens(1000000)).toBe(1330000) // Large number test
-  })
+    // Verify total daily messages
+    expect(result.totalDailyMessages).toBe(1500); // 100 users * 3 conversations * 5 messages
 
-  it('should correctly convert tokens to words', () => {
-    expect(tokensToWords(14)).toBe(11) // 14 / 1.33 = 10.52, ceil to 11
-    expect(tokensToWords(133)).toBe(100)
-    expect(tokensToWords(0)).toBe(0)
-    expect(tokensToWords(-1)).toBe(0) // Negative input should return 0
-    expect(tokensToWords(0.5)).toBe(1) // Decimal input should be rounded up
-    expect(tokensToWords(1000000)).toBe(751880) // Large number test
-  })
-})
+    // Verify tokens per message calculations
+    const expectedChunkTokens = Math.ceil(200 * WORDS_TO_TOKENS_RATIO) * 2; // wordsPerChunk * ratio * chunksPerQuery
+    const expectedQueryTokens = Math.ceil(18 * WORDS_TO_TOKENS_RATIO);
+    const expectedResponseTokens = Math.ceil(60 * WORDS_TO_TOKENS_RATIO);
 
-describe('Cost Calculations', () => {
-  const MODEL = {
-    inputPrice: 0.0025,
-    outputPrice: 0.01
-  }
+    expect(result.tokensPerMessage).toBeGreaterThan(
+      expectedChunkTokens + expectedQueryTokens + expectedResponseTokens
+    );
 
-  it('should calculate correct history tokens', () => {
-    const queryTokens = 40
-    const outputTokens = 100
-    const messageIndex = 2
+    // Verify backcheck
+    expect(result.backcheck?.isValid).toBe(true);
+    expect(result.backcheck?.details.totalMessagesMatch).toBe(true);
+    expect(result.backcheck?.details.dailyCostMatch).toBe(true);
+  });
 
-    const historyTokens = messageIndex * (queryTokens + outputTokens)
-    expect(historyTokens).toBe(280) // 2 * (40 + 100) = 280
-  })
+  it("should handle zero values gracefully", () => {
+    const zeroInput: CalculationInput = {
+      ...defaultInput,
+      dailyUsers: 0,
+      conversationsPerUser: 0,
+      messagesPerConversation: 0,
+    };
 
-  it('should calculate correct total input tokens', () => {
-    const chunksPerQuery = 2
-    const chunkTokens = 500
-    const queryTokens = 40
-    const historyTokens = 280
+    const result = calculateCosts(zeroInput);
+    expect(result.totalDailyMessages).toBe(0);
+    expect(result.dailyCost).toBe(0);
+    expect(result.monthlyCost).toBe(0);
+    expect(result.annualCost).toBe(0);
 
-    const totalInputTokens = math.chain(chunksPerQuery)
-      .multiply(chunkTokens)
-      .add(queryTokens)
-      .add(historyTokens)
-      .done()
+    // Verify backcheck for zero values
+    expect(result.backcheck?.isValid).toBe(true);
+    expect(result.backcheck?.details.expectedValues.dailyCost).toBe(0);
+    expect(result.backcheck?.details.actualValues.dailyCost).toBe(0);
+  });
 
-    expect(totalInputTokens).toBe(1320) // (2 * 500) + 40 + 280 = 1320
-  })
+  it("should calculate costs with different models", () => {
+    const model = OPENAI_MODELS["gpt-4o"];
+    const result = calculateCosts(defaultInput);
 
-  it('should calculate correct daily costs', () => {
-    const totalInputTokens = 1320
-    const outputTokens = 100
-    const totalDailyMessages = 1500 // example: 100 users * 3 conversations * 5 messages
+    // Verify that costs are calculated using model prices
+    expect(result.dailyCost).toBeGreaterThan(0);
+    expect(result.monthlyCost).toBe(result.dailyCost * 30);
+    expect(result.annualCost).toBe(result.dailyCost * 365);
 
-    const dailyInputCost = math.chain(totalInputTokens)
-      .multiply(totalDailyMessages)
-      .divide(1000)
-      .multiply(MODEL.inputPrice)
-      .done()
+    // Verify backcheck with model prices
+    expect(result.backcheck?.isValid).toBe(true);
+    expect(result.backcheck?.details.expectedValues.dailyCost).toBeCloseTo(
+      result.dailyCost,
+      4
+    );
+  });
 
-    const dailyOutputCost = math.chain(outputTokens)
-      .multiply(totalDailyMessages)
-      .divide(1000)
-      .multiply(MODEL.outputPrice)
-      .done()
+  it("should calculate per-message and per-user costs", () => {
+    const result = calculateCosts(defaultInput);
 
-    const dailyCost = math.add(dailyInputCost, dailyOutputCost)
-    
-    // 1320 * 1500 / 1000 * 0.0025 = 4.95 (input cost)
-    // 100 * 1500 / 1000 * 0.01 = 1.5 (output cost)
-    // Total = 6.45
-    expect(dailyCost).toBe(6.45)
-  })
+    // Verify per-message cost
+    const expectedPerMessageCost =
+      result.monthlyCost / (result.totalDailyMessages * 30);
+    expect(result.costPerMessage).toBe(expectedPerMessageCost);
 
-  it('should calculate correct monthly and annual costs', () => {
-    const dailyCost = 6.45
-    const monthlyCost = math.multiply(dailyCost, 30)
-    const annualCost = math.multiply(dailyCost, 365)
+    // Verify per-user cost
+    const expectedPerUserCost = result.monthlyCost / defaultInput.dailyUsers;
+    expect(result.costPerUser).toBe(expectedPerUserCost);
 
-    expect(monthlyCost).toBe(193.5) // 6.45 * 30
-    expect(annualCost).toBe(2354.25) // 6.45 * 365
-  })
+    // Verify backcheck
+    expect(result.backcheck?.isValid).toBe(true);
+  });
 
-  it('should handle edge cases for history tokens calculation', () => {
-    expect(() => {
-      const queryTokens = -40
-      const outputTokens = 100
-      const messageIndex = 2
-      const historyTokens = messageIndex * (queryTokens + outputTokens)
-      return historyTokens
-    }).not.toThrow()
+  it("should handle conversation history correctly", () => {
+    const result = calculateCosts(defaultInput);
 
-    expect(() => {
-      const queryTokens = Number.MAX_SAFE_INTEGER
-      const outputTokens = 100
-      const messageIndex = 2
-      const historyTokens = messageIndex * (queryTokens + outputTokens)
-      return historyTokens
-    }).not.toThrow()
-  })
+    // For 5 messages, history tokens should be calculated correctly
+    expect(result.averageHistoryTokens).toBeGreaterThanOrEqual(0);
 
-  it('should handle edge cases for cost calculations', () => {
-    const totalInputTokens = 0
-    const outputTokens = 0
-    const totalDailyMessages = 0
+    // Test with single message conversation
+    const singleMessageResult = calculateCosts({
+      ...defaultInput,
+      messagesPerConversation: 1,
+    });
+    expect(singleMessageResult.averageHistoryTokens).toBe(0);
 
-    const dailyInputCost = math.chain(totalInputTokens)
-      .multiply(totalDailyMessages)
-      .divide(1000)
-      .multiply(MODEL.inputPrice)
-      .done()
+    // Verify backcheck for both cases
+    expect(result.backcheck?.isValid).toBe(true);
+    expect(singleMessageResult.backcheck?.isValid).toBe(true);
+  });
 
-    const dailyOutputCost = math.chain(outputTokens)
-      .multiply(totalDailyMessages)
-      .divide(1000)
-      .multiply(MODEL.outputPrice)
-      .done()
+  it("should handle invalid model gracefully", () => {
+    const result = calculateCosts({
+      ...defaultInput,
+      selectedModel: "non-existent-model",
+    });
 
-    const dailyCost = math.add(dailyInputCost, dailyOutputCost)
-    
-    expect(dailyCost).toBe(0) // Zero usage should result in zero cost
+    expect(result.dailyCost).toBe(0);
+    expect(result.monthlyCost).toBe(0);
+    expect(result.annualCost).toBe(0);
 
-    // Test with very small numbers
-    const smallDailyCost = math.chain(1)
-      .multiply(1)
-      .divide(1000)
-      .multiply(MODEL.inputPrice)
-      .done()
-    
-    expect(smallDailyCost).toBe(0.0000025) // Verify precision with small numbers
-  })
-}) 
+    // Verify backcheck for invalid model
+    expect(result.backcheck?.isValid).toBe(true);
+    expect(result.backcheck?.details.expectedValues.dailyCost).toBe(0);
+    expect(result.backcheck?.details.actualValues.dailyCost).toBe(0);
+  });
+
+  describe("Backcheck Functionality", () => {
+    it("should validate calculations match expected values", () => {
+      const result = calculateCosts(defaultInput);
+      expect(result.backcheck).toBeDefined();
+      expect(result.backcheck?.isValid).toBe(true);
+      expect(result.backcheck?.details.inputTokensMatch).toBe(true);
+      expect(result.backcheck?.details.outputTokensMatch).toBe(true);
+      expect(result.backcheck?.details.totalMessagesMatch).toBe(true);
+      expect(result.backcheck?.details.dailyCostMatch).toBe(true);
+    });
+
+    it("should provide detailed comparison values", () => {
+      const result = calculateCosts(defaultInput);
+      const backcheck = result.backcheck;
+
+      expect(backcheck?.details.expectedValues.totalMessages).toBe(
+        defaultInput.dailyUsers *
+          defaultInput.conversationsPerUser *
+          defaultInput.messagesPerConversation
+      );
+      expect(backcheck?.details.actualValues.totalMessages).toBe(
+        result.totalDailyMessages
+      );
+
+      expect(backcheck?.details.expectedValues.dailyCost).toBeCloseTo(
+        result.dailyCost,
+        4
+      );
+      expect(backcheck?.details.actualValues.dailyCost).toBe(result.dailyCost);
+    });
+  });
+}); 
